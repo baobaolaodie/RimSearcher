@@ -18,6 +18,8 @@ public sealed class IndexCacheSnapshot
 {
     public SourceIndexerSnapshot Source { get; init; } = new();
     public DefIndexerSnapshot Def { get; init; } = new();
+    public PatchIndexerSnapshot? Patch { get; init; }
+    public HarmonyPatchIndexerSnapshot? HarmonyPatch { get; init; }
 }
 
 public sealed class SourceIndexerSnapshot

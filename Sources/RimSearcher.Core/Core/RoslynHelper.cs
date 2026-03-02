@@ -234,4 +234,152 @@ public static class RoslynHelper
         return $"// File: {filePath}\n// Starts at line: {lineSpan.StartLinePosition.Line + 1}\n{typeMatch.ToFullString()}";
     }
 
+    public static List<HarmonyPatchLocation> ExtractHarmonyPatches(string filePath, string modName)
+    {
+        var results = new List<HarmonyPatchLocation>();
+
+        try
+        {
+            if (!File.Exists(filePath) || new FileInfo(filePath).Length > MaxFileSize)
+                return results;
+
+            using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            using var reader = new StreamReader(stream);
+            var code = reader.ReadToEnd();
+
+            var tree = CSharpSyntaxTree.ParseText(code);
+            var root = tree.GetCompilationUnitRoot();
+
+            var classes = root.DescendantNodes().OfType<ClassDeclarationSyntax>();
+
+            foreach (var classDecl in classes)
+            {
+                var className = classDecl.Identifier.Text;
+                var harmonyPatchAttr = classDecl.AttributeLists
+                    .SelectMany(al => al.Attributes)
+                    .FirstOrDefault(a => a.Name.ToString().Contains("HarmonyPatch"));
+
+                if (harmonyPatchAttr == null) continue;
+
+                var (targetTypeName, targetMethodName) = ParseHarmonyPatchAttribute(harmonyPatchAttr);
+
+                foreach (var method in classDecl.Members.OfType<MethodDeclarationSyntax>())
+                {
+                    var patchType = DetermineHarmonyPatchType(method);
+                    if (patchType == HarmonyPatchType.Unknown) continue;
+
+                    var lineSpan = method.GetLocation().GetLineSpan();
+
+                    results.Add(new HarmonyPatchLocation
+                    {
+                        FilePath = filePath,
+                        ModName = modName,
+                        PatchMethodName = method.Identifier.Text,
+                        PatchClassName = className,
+                        PatchType = patchType,
+                        TargetTypeName = targetTypeName,
+                        TargetMethodName = targetMethodName,
+                        LineNumber = lineSpan.StartLinePosition.Line + 1
+                    });
+                }
+            }
+        }
+        catch { }
+
+        return results;
+    }
+
+    private static (string? TypeName, string? MethodName) ParseHarmonyPatchAttribute(AttributeSyntax attr)
+    {
+        string? typeName = null;
+        string? methodName = null;
+
+        var args = attr.ArgumentList?.Arguments ?? new SeparatedSyntaxList<AttributeArgumentSyntax>();
+
+        if (args.Count >= 1)
+        {
+            var firstArg = args[0];
+            if (firstArg.Expression is TypeOfExpressionSyntax typeOfExpr)
+            {
+                typeName = typeOfExpr.Type.ToString();
+            }
+            else
+            {
+                typeName = firstArg.ToString().Trim('"');
+            }
+        }
+
+        if (args.Count >= 2)
+        {
+            var secondArg = args[1];
+            if (secondArg.Expression is LiteralExpressionSyntax literal)
+            {
+                methodName = literal.Token.ValueText;
+            }
+            else if (secondArg.NameEquals != null && secondArg.NameEquals.Name.Identifier.Text == "Method")
+            {
+                if (secondArg.Expression is LiteralExpressionSyntax methodLiteral)
+                {
+                    methodName = methodLiteral.Token.ValueText;
+                }
+            }
+            else
+            {
+                methodName = secondArg.ToString().Trim('"');
+            }
+        }
+
+        foreach (var arg in args)
+        {
+            if (arg.NameEquals != null)
+            {
+                var name = arg.NameEquals.Name.Identifier.Text;
+                if (name.Equals("Type", StringComparison.OrdinalIgnoreCase) && typeName == null)
+                {
+                    typeName = arg.Expression.ToString().Trim('"');
+                }
+                else if (name.Equals("Method", StringComparison.OrdinalIgnoreCase) && methodName == null)
+                {
+                    if (arg.Expression is LiteralExpressionSyntax methodLiteral)
+                    {
+                        methodName = methodLiteral.Token.ValueText;
+                    }
+                    else
+                    {
+                        methodName = arg.Expression.ToString().Trim('"');
+                    }
+                }
+            }
+        }
+
+        return (typeName, methodName);
+    }
+
+    private static HarmonyPatchType DetermineHarmonyPatchType(MethodDeclarationSyntax method)
+    {
+        foreach (var attrList in method.AttributeLists)
+        {
+            foreach (var attr in attrList.Attributes)
+            {
+                var attrName = attr.Name.ToString();
+                if (attrName.Contains("HarmonyPrefix", StringComparison.OrdinalIgnoreCase))
+                    return HarmonyPatchType.Prefix;
+                if (attrName.Contains("HarmonyPostfix", StringComparison.OrdinalIgnoreCase))
+                    return HarmonyPatchType.Postfix;
+                if (attrName.Contains("HarmonyTranspiler", StringComparison.OrdinalIgnoreCase))
+                    return HarmonyPatchType.Transpiler;
+                if (attrName.Contains("HarmonyFinalizer", StringComparison.OrdinalIgnoreCase))
+                    return HarmonyPatchType.Finalizer;
+            }
+        }
+
+        var methodName = method.Identifier.Text.ToLowerInvariant();
+        if (methodName.StartsWith("prefix")) return HarmonyPatchType.Prefix;
+        if (methodName.StartsWith("postfix")) return HarmonyPatchType.Postfix;
+        if (methodName.StartsWith("transpiler")) return HarmonyPatchType.Transpiler;
+        if (methodName.StartsWith("finalizer")) return HarmonyPatchType.Finalizer;
+
+        return HarmonyPatchType.Unknown;
+    }
+
 }

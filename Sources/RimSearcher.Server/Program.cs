@@ -13,7 +13,7 @@ Console.SetOut(Console.Error);
 var (appConfig, configPath, isLoaded) = AppConfig.Load();
 await ServerLogger.Info("Program", "Configuration source", ("path", configPath));
 
-bool hasPaths = appConfig.CsharpSourcePaths.Count > 0 || appConfig.XmlSourcePaths.Count > 0;
+bool hasPaths = appConfig.CsharpSourcePaths.Count > 0 || appConfig.XmlSourcePaths.Count > 0 || appConfig.Mods.Count > 0;
 var cacheDirectory = IndexCacheService.GetDefaultCacheDirectory();
 var canUseCache = IndexCacheService.EnsureCacheDirectory(cacheDirectory, out var cacheInitError);
 await ServerLogger.Info("Program", "Index cache directory", ("path", cacheDirectory));
@@ -32,14 +32,65 @@ else if (!hasPaths)
     await ServerLogger.Warning("Program", "No source paths defined", ("path", configPath));
 }
 
-PathSecurity.Initialize(appConfig.CsharpSourcePaths.Concat(appConfig.XmlSourcePaths), enabled: !appConfig.SkipPathSecurity);
+var resolvedMods = ModPathResolver.Resolve(appConfig.Mods);
+var allCsharpPaths = new List<string>(appConfig.CsharpSourcePaths);
+var allXmlPaths = new List<string>(appConfig.XmlSourcePaths);
+var allPatchPaths = new List<string>();
+
+foreach (var mod in resolvedMods)
+{
+    if (!mod.IsEnabled)
+    {
+        await ServerLogger.Info("Program", "Mod disabled, skipping", ("mod", mod.ModName));
+        continue;
+    }
+
+    if (!mod.RootExists)
+    {
+        await ServerLogger.Warning("Program", "Mod path not found", ("mod", mod.ModName), ("path", mod.ModRootPath));
+        continue;
+    }
+
+    if (mod.DetectedVersions.Count > 0)
+    {
+        await ServerLogger.Info("Program", "Mod version directories detected", ("mod", mod.ModName), ("versions", string.Join(", ", mod.DetectedVersions.Select(p => Path.GetFileName(p)))));
+    }
+
+    if (mod.CsharpPaths.Count > 0)
+    {
+        allCsharpPaths.AddRange(mod.CsharpPaths);
+        await ServerLogger.Info("Program", "Mod C# paths resolved", ("mod", mod.ModName), ("count", mod.CsharpPaths.Count));
+    }
+
+    if (mod.XmlPaths.Count > 0)
+    {
+        allXmlPaths.AddRange(mod.XmlPaths);
+        await ServerLogger.Info("Program", "Mod XML paths resolved", ("mod", mod.ModName), ("count", mod.XmlPaths.Count));
+    }
+
+    if (mod.PatchesPaths.Count > 0)
+    {
+        allPatchPaths.AddRange(mod.PatchesPaths);
+        await ServerLogger.Info("Program", "Mod Patch paths resolved", ("mod", mod.ModName), ("count", mod.PatchesPaths.Count));
+    }
+
+    if (mod.CsharpPaths.Count == 0 && mod.XmlPaths.Count == 0 && mod.PatchesPaths.Count == 0)
+    {
+        await ServerLogger.Info("Program", "Mod has no indexable paths", ("mod", mod.ModName));
+    }
+}
+
+PathSecurity.Initialize(allCsharpPaths.Concat(allXmlPaths).Concat(allPatchPaths), enabled: !appConfig.SkipPathSecurity);
 
 var indexer = new SourceIndexer();
 var defIndexer = new DefIndexer(Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance);
+var patchIndexer = new PatchIndexer();
+var harmonyPatchIndexer = new HarmonyPatchIndexer();
 
 var failedPaths = new List<string>();
 var existingCsharpPaths = new List<string>();
 var existingXmlPaths = new List<string>();
+var existingPatchPaths = new List<string>();
 
 foreach (var path in appConfig.CsharpSourcePaths)
 {
@@ -53,12 +104,36 @@ foreach (var path in appConfig.XmlSourcePaths)
     else failedPaths.Add($"XML source: {path}");
 }
 
+foreach (var mod in resolvedMods)
+{
+    if (!mod.IsEnabled || !mod.RootExists) continue;
+
+    foreach (var path in mod.CsharpPaths)
+    {
+        if (Directory.Exists(path)) existingCsharpPaths.Add(path);
+        else failedPaths.Add($"Mod[{mod.ModName}] C#: {path}");
+    }
+
+    foreach (var path in mod.XmlPaths)
+    {
+        if (Directory.Exists(path)) existingXmlPaths.Add(path);
+        else failedPaths.Add($"Mod[{mod.ModName}] XML: {path}");
+    }
+
+    foreach (var path in mod.PatchesPaths)
+    {
+        if (Directory.Exists(path)) existingPatchPaths.Add(path);
+        else failedPaths.Add($"Mod[{mod.ModName}] Patch: {path}");
+    }
+}
+
 var totalCsharpPaths = 0;
 var totalXmlPaths = 0;
+var totalPatchPaths = 0;
 var cacheLoaded = false;
-var configFingerprint = IndexCacheService.ComputeConfigFingerprint(appConfig.CsharpSourcePaths, appConfig.XmlSourcePaths);
+var configFingerprint = IndexCacheService.ComputeConfigFingerprint(appConfig.CsharpSourcePaths, appConfig.XmlSourcePaths, appConfig.Mods);
 
-if (hasPaths && existingCsharpPaths.Count + existingXmlPaths.Count > 0)
+if (hasPaths && existingCsharpPaths.Count + existingXmlPaths.Count + existingPatchPaths.Count > 0)
 {
     if (canUseCache && failedPaths.Count == 0)
     {
@@ -67,8 +142,14 @@ if (hasPaths && existingCsharpPaths.Count + existingXmlPaths.Count > 0)
         {
             indexer.ImportSnapshot(loadResult.Snapshot.Source);
             defIndexer.ImportSnapshot(loadResult.Snapshot.Def);
+            if (loadResult.Snapshot.Patch != null)
+                patchIndexer.ImportSnapshot(loadResult.Snapshot.Patch);
+            if (loadResult.Snapshot.HarmonyPatch != null)
+                harmonyPatchIndexer.ImportSnapshot(loadResult.Snapshot.HarmonyPatch);
             indexer.FreezeIndex();
             defIndexer.FreezeIndex();
+            patchIndexer.FreezeIndex();
+            harmonyPatchIndexer.FreezeIndex();
             cacheLoaded = true;
             await ServerLogger.Info("Program", "Index loaded from cache");
         }
@@ -95,13 +176,32 @@ if (hasPaths && existingCsharpPaths.Count + existingXmlPaths.Count > 0)
             totalXmlPaths++;
         }
 
-        if (totalCsharpPaths > 0 || totalXmlPaths > 0)
+        foreach (var mod in resolvedMods)
+        {
+            if (!mod.IsEnabled || !mod.RootExists) continue;
+
+            foreach (var path in mod.PatchesPaths)
+            {
+                patchIndexer.Scan(path, mod.ModName);
+                totalPatchPaths++;
+            }
+
+            foreach (var path in mod.CsharpPaths)
+            {
+                harmonyPatchIndexer.Scan(path, mod.ModName);
+            }
+        }
+
+        if (totalCsharpPaths > 0 || totalXmlPaths > 0 || totalPatchPaths > 0)
         {
             indexer.FreezeIndex();
             defIndexer.FreezeIndex();
+            patchIndexer.FreezeIndex();
+            harmonyPatchIndexer.FreezeIndex();
             await ServerLogger.Info("Program", "Index build completed",
                 ("csPaths", totalCsharpPaths),
                 ("xmlPaths", totalXmlPaths),
+                ("patchPaths", totalPatchPaths),
                 ("durationMs", buildStopwatch.ElapsedMilliseconds));
 
             if (canUseCache && failedPaths.Count == 0)
@@ -109,7 +209,9 @@ if (hasPaths && existingCsharpPaths.Count + existingXmlPaths.Count > 0)
                 var snapshot = new IndexCacheSnapshot
                 {
                     Source = indexer.ExportSnapshot(),
-                    Def = defIndexer.ExportSnapshot()
+                    Def = defIndexer.ExportSnapshot(),
+                    Patch = patchIndexer.ExportSnapshot(),
+                    HarmonyPatch = harmonyPatchIndexer.ExportSnapshot()
                 };
 
                 var indexedCsharpFileCount = snapshot.Source.ProcessedFiles.Count(path =>
@@ -146,10 +248,11 @@ var server = new RimSearcher.Server.RimSearcher(protocolOut);
 
 server.RegisterTool(new ListDirectoryTool());
 server.RegisterTool(new LocateTool(indexer, defIndexer));
-server.RegisterTool(new InspectTool(indexer, defIndexer));
+server.RegisterTool(new InspectTool(indexer, defIndexer, patchIndexer, harmonyPatchIndexer));
 server.RegisterTool(new TraceTool(indexer));
 server.RegisterTool(new ReadCodeTool(indexer));
 server.RegisterTool(new SearchRegexTool(indexer));
+server.RegisterTool(new ListPatchesTool(patchIndexer, harmonyPatchIndexer));
 
 if (isLoaded && hasPaths)
 {

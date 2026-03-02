@@ -8,6 +8,8 @@ public class InspectTool : ITool
 {
     private readonly SourceIndexer _sourceIndexer;
     private readonly DefIndexer _defIndexer;
+    private readonly PatchIndexer? _patchIndexer;
+    private readonly HarmonyPatchIndexer? _harmonyPatchIndexer;
 
     private static readonly HashSet<string> ClassTags = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -24,16 +26,19 @@ public class InspectTool : ITool
         "eventClass", "worldDrawLayer", "designatorType", "scenPartClass", "stateClass"
     };
 
-    public InspectTool(SourceIndexer sourceIndexer, DefIndexer defIndexer)
+    public InspectTool(SourceIndexer sourceIndexer, DefIndexer defIndexer, 
+        PatchIndexer? patchIndexer = null, HarmonyPatchIndexer? harmonyPatchIndexer = null)
     {
         _sourceIndexer = sourceIndexer;
         _defIndexer = defIndexer;
+        _patchIndexer = patchIndexer;
+        _harmonyPatchIndexer = harmonyPatchIndexer;
     }
 
     public string Name => "rimworld-searcher__inspect";
 
     public string Description =>
-        "Inspect a RimWorld def or C# type in depth. For defs, resolves ParentName inheritance into merged XML and extracts linked C# classes. For C# types, returns inheritance graph and class outline. Tested with 'Apparel_ShieldBelt' and 'RimWorld.CompShield'.";
+        "Inspect a RimWorld def or C# type in depth. For defs, resolves ParentName inheritance into merged XML and extracts linked C# classes. For C# types, returns inheritance graph and class outline. Shows patch hints when available.";
 
     public string? Icon => "lucide:eye";
 
@@ -71,6 +76,15 @@ public class InspectTool : ITool
                 sb.AppendLine($"C# Class: `{def.DefType}` ({string.Join(", ", typePaths.Select(Path.GetFileName))})");
 
             sb.AppendLine($"File: `{def.FilePath}`");
+
+            if (_patchIndexer != null)
+            {
+                var patchCount = _patchIndexer.GetPatchCountForDef(name);
+                if (patchCount > 0)
+                {
+                    sb.AppendLine($"\n> **⚠️ Patch Hint:** This Def has {patchCount} XML patch(es). Use `list_patches` tool with target `{name}` to see details.");
+                }
+            }
 
             var resolvedXml = await XmlInheritanceHelper.ResolveDefXmlElementAsync(name, _defIndexer);
             if (resolvedXml == null)
@@ -150,6 +164,17 @@ public class InspectTool : ITool
         if (csharpPaths.Count > 0)
         {
             sb.AppendLine($"## C# Type: {name}");
+
+            if (_harmonyPatchIndexer != null)
+            {
+                var methodPatchCount = _harmonyPatchIndexer.GetPatchCountForMethod(name);
+                var typePatchCount = _harmonyPatchIndexer.GetPatchCountForType(name);
+                var totalPatchCount = methodPatchCount + typePatchCount;
+                if (totalPatchCount > 0)
+                {
+                    sb.AppendLine($"\n> **⚠️ Harmony Patch Hint:** This type has {totalPatchCount} Harmony patch(es). Use `list_patches` tool with target `{name}` to see details.");
+                }
+            }
 
             var chain = _sourceIndexer.GetInheritanceChain(name);
             if (chain.Count > 0)

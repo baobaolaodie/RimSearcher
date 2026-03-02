@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RimSearcher.Core;
 
 namespace RimSearcher.Server;
 
@@ -8,6 +9,7 @@ public record AppConfig
 
     public List<string> CsharpSourcePaths { get; init; } = new();
     public List<string> XmlSourcePaths { get; init; } = new();
+    public List<ModConfig> Mods { get; init; } = new();
     public bool SkipPathSecurity { get; init; } = false;
     public bool CheckUpdates { get; init; } = true;
 

@@ -46,7 +46,7 @@ public static class IndexCacheService
         }
     }
 
-    public static string ComputeConfigFingerprint(IEnumerable<string> csharpPaths, IEnumerable<string> xmlPaths)
+    public static string ComputeConfigFingerprint(IEnumerable<string> csharpPaths, IEnumerable<string> xmlPaths, IEnumerable<ModConfig>? mods = null)
     {
         var normalizedCsharp = NormalizePaths(csharpPaths);
         var normalizedXml = NormalizePaths(xmlPaths);
@@ -63,6 +63,25 @@ public static class IndexCacheService
         foreach (var path in normalizedXml)
         {
             builder.AppendLine(path);
+        }
+
+        if (mods != null)
+        {
+            builder.AppendLine("[mods]");
+            foreach (var mod in mods)
+            {
+                builder.AppendLine($"name:{mod.Name}");
+                builder.AppendLine($"path:{mod.Path}");
+                builder.AppendLine($"enabled:{mod.Enabled}");
+                if (mod.CsharpPaths.Count > 0)
+                {
+                    builder.AppendLine($"csharpPaths:{string.Join(",", mod.CsharpPaths)}");
+                }
+                if (mod.XmlPaths.Count > 0)
+                {
+                    builder.AppendLine($"xmlPaths:{string.Join(",", mod.XmlPaths)}");
+                }
+            }
         }
 
         return $"sha256:{ComputeSha256(Encoding.UTF8.GetBytes(builder.ToString()))}";

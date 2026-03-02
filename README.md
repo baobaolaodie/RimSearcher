@@ -40,7 +40,7 @@
 
 ---
 
-## 2. 六大工具
+## 2. 七大工具
 
 以下为实际注册的 MCP 工具名与能力说明。
 
@@ -69,10 +69,12 @@ field:energy
 - 展示 Def 类型、来源文件
 - 返回继承合并后的 XML
 - 提取关联 C# 类型并尝试映射到索引文件
+- **Patch 提示**：如果存在 XML Patch，显示 Patch 数量提示
 
 **C# 模式**
 - 返回继承关系图
 - 返回类成员大纲（字段/属性/方法签名）
+- **Harmony Patch 提示**：如果存在 Harmony Patch，显示 Patch 数量提示
 
 **示例**
 ```text
@@ -143,6 +145,26 @@ fileFilter: .cs
 
 ---
 
+###  `list_patches`
+Patch 查询工具。
+
+**特性**
+- 查询指定 Def 或方法的相关 Patch
+- 支持 XML Patch 和 Harmony Patch 查询
+- 返回 Patch 来源文件、Mod 名称、操作类型等信息
+
+**参数**
+- `target`: 目标 Def 名称或方法名称
+- `patchType`: Patch 类型（`xml`、`harmony`、`all`，默认 `all`）
+
+**示例**
+```text
+target: Apparel_ShieldBelt
+patchType: all
+```
+
+---
+
 ## 2.5 系统架构
 
 ```text
@@ -168,15 +190,21 @@ Program.cs (bootstrap)
         `- .cache/.update-cache (latest version + check time)
 
 Tool Layer
-  |- locate | inspect | trace | read_code | search_regex | list_directory
+  |- locate | inspect | trace | read_code | search_regex | list_directory | list_patches
   |
   +-- SourceIndexer
   |     |- RoslynHelper / FuzzyMatcher / QueryParser
   |     `- Local C# source (Assembly-CSharp)
   |
-  `-- DefIndexer
-        |- XmlInheritanceHelper / FuzzyMatcher / QueryParser
-        `- Local RimWorld XML (Data/Defs...)
+  +-- DefIndexer
+  |     |- XmlInheritanceHelper / FuzzyMatcher / QueryParser
+  |     `- Local RimWorld XML (Data/Defs...)
+  |
+  +-- PatchIndexer
+  |     `- Mod XML Patches (Patches/*.xml)
+  |
+  `-- HarmonyPatchIndexer
+        `- Mod Harmony Patches ([HarmonyPatch] attributes)
 ```
 
 **启动流程**
@@ -246,6 +274,17 @@ Tool Layer
   "XmlSourcePaths": [
     "C:/SteamLibrary/steamapps/common/RimWorld/Data"
   ],
+  "Mods": [
+    {
+      "name": "HugsLib",
+      "path": "C:/RimWorld/Mods/HugsLib"
+    },
+    {
+      "name": "JecsTools",
+      "path": "C:/RimWorld/Mods/JecsTools",
+      "enabled": false
+    }
+  ],
   "SkipPathSecurity": false,
   "CheckUpdates": true
 }
@@ -254,8 +293,26 @@ Tool Layer
 字段说明：
 - `CsharpSourcePaths`: C# 源码目录（反编译源码目录，需要自己反编译导出游戏源码文件，这里不提供）
 - `XmlSourcePaths`: RimWorld `Data` 目录
+- `Mods`: Mod 配置列表（可选）
+  - `name`: Mod 名称（用于日志和 Patch 来源标识）
+  - `path`: Mod 根目录路径
+  - `enabled`: 是否启用索引（默认 `true`）
+  - `csharpPaths`: 显式指定 C# 源码子目录（可选，默认自动探测 `Source/`）
+  - `xmlPaths`: 显式指定 XML Defs 子目录（可选，默认自动探测 `Defs/`）
 - `SkipPathSecurity`: `true` 时关闭路径白名单检查（仅建议本地可信环境）
 - `CheckUpdates`: 是否启用版本更新提示
+
+#### Mod 目录自动探测
+RimSearcher 会自动探测 Mod 的标准目录结构：
+- `Source/` 或 `Sources/`：C# 源码目录
+- `Defs/` 或 `Def/`：XML Defs 目录
+- `Patches/` 或 `Patch/`：XML Patch 目录
+
+#### Mod 版本目录支持
+如果 Mod 包含版本目录（如 `1.3/`、`1.4/`、`1.5/`），RimSearcher 会：
+- 优先索引版本目录下的内容
+- 同时索引所有存在的版本目录
+- 自动探测版本目录下的 `Source/`、`Defs/`、`Patches/` 子目录
 
 3. 在 MCP 客户端中把 `RimSearcher.Server.exe` 注册为 **stdio MCP Server**，并设置环境变量 `RIMSEARCHER_CONFIG` 指向上一步的 `config.json`。
 
@@ -333,7 +390,7 @@ Tool Layer
 ![启动成功示例](Image/Snipaste_2026-02-27_16-12-43.png)
 
 快速检查是否接入成功：
-- 客户端工具列表中能看到 `rimworld-searcher__locate`、`rimworld-searcher__inspect` 等 6 个工具。
+- 客户端工具列表中能看到 `rimworld-searcher__locate`、`rimworld-searcher__inspect`、`list_patches` 等 7 个工具。
 - 执行一次 `locate`（例如 `def:Apparel_ShieldBelt`）能返回结果。
 
 ---
